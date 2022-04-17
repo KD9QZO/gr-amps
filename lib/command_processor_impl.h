@@ -10,38 +10,39 @@
 
 #include <itpp/comm/bch.h>
 #include <amps/command_processor.h>
+
 #include "amps_packet.h"
+
 
 using namespace itpp;
 
+
 namespace gr {
-  namespace amps {
+namespace amps {
 
-    class command_processor_impl : public command_processor
-    {
-     private:
-         itpp::BCH bch;
 
-         void debug_msg(const char *msg);
-        void handle_page(const std::string numstr);
+class command_processor_impl: public command_processor {
+private:
+	itpp::BCH bch;
 
-     public:
-      command_processor_impl();
-      ~command_processor_impl();
+	void debug_msg(const char *msg);
+	void handle_page(const std::string numstr);
 
-      // Where all the action really happens
-      void forecast (int noutput_items, gr_vector_int &ninput_items_required);
+public:
+	command_processor_impl();
+	~command_processor_impl();
 
-      int general_work(int noutput_items,
-           gr_vector_int &ninput_items,
-           gr_vector_const_void_star &input_items,
-           gr_vector_void_star &output_items);
+	// Where all the action really happens
+	void forecast(int noutput_items, gr_vector_int &ninput_items_required);
 
-      void commands_message(pmt::pmt_t msg);
-    };
+	int general_work(int noutput_items, gr_vector_int &ninput_items, gr_vector_const_void_star &input_items, gr_vector_void_star &output_items);
 
-  } // namespace amps
-} // namespace gr
+	void commands_message(pmt::pmt_t msg);
+};
 
-#endif /* INCLUDED_AMPS_COMMAND_PROCESSOR_IMPL_H */
 
+}	/* namespace amps */
+}	/* namespace gr */
+
+
+#endif	/* !INCLUDED_AMPS_COMMAND_PROCESSOR_IMPL_H */

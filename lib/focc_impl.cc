@@ -9,14 +9,18 @@
 #endif
 
 #include <gnuradio/io_signature.h>
+
 #include "amps_packet.h"
 #include "focc_impl.h"
+
 #include <iostream>
 #include <sstream>
 #include <fstream>
 #include <algorithm>
 #include <vector>
+
 #include "utils.h"
+
 
 using namespace itpp;
 using std::vector;
@@ -25,197 +29,188 @@ using std::cout;
 using std::endl;
 using boost::shared_ptr;
 
+
 namespace gr {
-    namespace amps {
-
-        volatile bool busy_idle_bit;
+namespace amps {
 
 
-        /**
-         * AMPS BS FOCC.  553 3.7.1.2 says that the system parameter overhead 
-         * message needs to be sent every 0.8 +/- 0.3 s.
-         *
-         * The BS simulator is repeating the overhead words every 18 or 19 
-         * frames, putting this squarely in the range:
-         *     18 x 463 bits = 8334 bits (0.8334s)
-         *     19 x 463 bits = 8797 bits (0.8797s)
-         *
-         * This code uses 18 in a superframe, starting with word 1 and word 2.
-         */
-
-        focc::sptr
-        focc::make(unsigned long symrate, bool aggressive_registration) {
-            return gnuradio::get_initial_sptr (new focc_impl(symrate, aggressive_registration));
-        }
+volatile bool busy_idle_bit;
 
 
-        void
-        focc_impl::queue_file() {
-            std::ifstream bitfile("/tmp/out.bits");
-            std::cout << "XXX queue_file:    start: sz " << queuesize() << std::endl;
-            unsigned long zerocount = 0, onecount = 1;
-            while(bitfile) {
-                char buf[1];
-                buf[0] = 0;
-                if(!bitfile.read(buf, 1)) {
-                    break;
-                }
-                if(buf[0] == 1 || buf[0] == '1') {
-                    onecount++;
-                    queuebit(0);
-                    queuebit(1);
-                } else if(buf[0] == 0 || buf[0] == '0') {
-                    zerocount++;
-                    queuebit(1);
-                    queuebit(0);
-                } else {
-                    std::cout << "error: invalid value in bits file" << std::endl;
-                }
-            }
-            std::cout << "XXX queue_file:    final: sz " << queuesize() << std::endl;
-            std::cout << "XXX queue_file:    zerocount " << zerocount << " onecount " << onecount << std::endl;
-        }
+/**
+ * AMPS BS FOCC.  553 3.7.1.2 says that the system parameter overhead message needs to be sent every 0.8 +/- 0.3 s.
+ *
+ * The BS simulator is repeating the overhead words every 18 or 19 frames, putting this squarely in the range:
+ *     18 x 463 bits = 8334 bits (0.8334s)
+ *     19 x 463 bits = 8797 bits (0.8797s)
+ *
+ * This code uses 18 in a superframe, starting with word 1 and word 2.
+ */
+
+focc::sptr focc::make(unsigned long symrate, bool aggressive_registration) {
+	return (gnuradio::get_initial_sptr(new focc_impl(symrate, aggressive_registration)));
+}
 
 
-        void
-        focc_impl::queue_dup(bvec &bvec) {
-            for(unsigned int i = 0; i < bvec.size(); i++) {
-                queuebit(bvec[i]);
-                queuebit(bvec[i]);
-            }
-        }
+void focc_impl::queue_file() {
+	std::ifstream bitfile("/tmp/out.bits");
+	std::cout << "XXX queue_file:    start: sz " << queuesize() << std::endl;
+	unsigned long zerocount = 0;
+	unsigned long onecount = 1;
 
-        void 
-        focc_impl::queue(shared_ptr<bvec> bvptr) {
-            for(unsigned int i = 0; i < bvptr->size(); i++) {
-                queuebit((*bvptr)[i]);
-            }
-        }
-        void 
-        focc_impl::queue(uint32_t val) {
-            for(int i = 0; i < 32; i++) {
-                queuebit(((val & 0x80000000) == 0x80000000) ? 1 : 0);
-                val = val << 1;
-            }
-        }
+	while (bitfile) {
+		char buf[1];
+
+		buf[0] = 0;
+		if (!bitfile.read(buf, 1)) {
+			break;
+		}
+		if ((buf[0] == 1) || (buf[0] == '1')) {
+			onecount++;
+			queuebit(0);
+			queuebit(1);
+		} else if ((buf[0] == 0) || (buf[0] == '0')) {
+			zerocount++;
+			queuebit(1);
+			queuebit(0);
+		} else {
+			std::cout << "error: invalid value in bits file" << std::endl;
+		}
+	}
+	std::cout << "XXX queue_file:    final: sz " << queuesize() << std::endl;
+	std::cout << "XXX queue_file:    zerocount " << zerocount << " onecount " << onecount << std::endl;
+}
+
+
+void focc_impl::queue_dup(bvec &bvec) {
+	for (unsigned int i = 0; i < bvec.size(); i++) {
+		queuebit(bvec[i]);
+		queuebit(bvec[i]);
+	}
+}
+
+void focc_impl::queue(shared_ptr<bvec> bvptr) {
+	for (unsigned int i = 0; i < bvptr->size(); i++) {
+		queuebit((*bvptr)[i]);
+	}
+}
+
+void focc_impl::queue(uint32_t val) {
+	for (int i = 0; i < 32; i++) {
+		queuebit(((val & 0x80000000) == 0x80000000) ? 1 : 0);
+		val = (val << 1);
+	}
+}
 
 
 
-        focc_impl::focc_impl(unsigned long symrate, bool aggressive_registration)
-          : d_symrate(symrate), cur_burst_state(FOCC_END), cur_off(0), bch(63, 2, true),
-            samples_per_sym(symrate / 20000), d_aggressive_registration(aggressive_registration),
-          sync_block("focc",
-                  io_signature::make(0, 0, 0),
-                  io_signature::make(1, 1, sizeof (unsigned char)))
-        {
-            busy_idle_bit = 1;
-            BI_zero_buf = new char[samples_per_sym * 2];
-            BI_one_buf = new char[samples_per_sym * 2];
-            for(int i = 0; i < samples_per_sym; i++) {
-                BI_zero_buf[i] = 1;
-                BI_zero_buf[samples_per_sym+i] = -1;
-                BI_one_buf[i] = -1;
-                BI_one_buf[samples_per_sym+i] = 1;
-            }
-            if(d_aggressive_registration) {
-                make_registration_superframe();
-            } else {
-                make_superframe();
-            }
-            validate_superframe();
+focc_impl::focc_impl(unsigned long symrate, bool aggressive_registration): d_symrate(symrate), cur_burst_state(FOCC_END), cur_off(0), bch(63, 2, true), samples_per_sym(symrate / 20000), d_aggressive_registration(aggressive_registration), sync_block("focc", io_signature::make(0, 0, 0), io_signature::make(1, 1, sizeof (unsigned char))) {
+	busy_idle_bit = 1;
+	BI_zero_buf = new char[samples_per_sym * 2];
+	BI_one_buf = new char[samples_per_sym * 2];
 
-            message_port_register_in(pmt::mp("focc_words"));
-            set_msg_handler(pmt::mp("focc_words"),
-                boost::bind(&focc_impl::focc_words_message, this, _1)
-            );
+	for (int i = 0; i < samples_per_sym; i++) {
+		BI_zero_buf[i] = 1;
+		BI_zero_buf[samples_per_sym+i] = -1;
+		BI_one_buf[i] = -1;
+		BI_one_buf[samples_per_sym+i] = 1;
+	}
+	if (d_aggressive_registration) {
+		make_registration_superframe();
+	} else {
+		make_superframe();
+	}
+	validate_superframe();
+
+	message_port_register_in(pmt::mp("focc_words"));
+	set_msg_handler(pmt::mp("focc_words"), boost::bind(&focc_impl::focc_words_message, this, _1));
 
 #ifdef AMPS_DEBUG
-            std::cout << "AMPS_DEBUG is enabled!" << std::endl;
-            debugfd = open("/tmp/debug.bits", O_CREAT | O_APPEND, 0755);
+	std::cout << "AMPS_DEBUG is enabled!" << std::endl;
+	debugfd = open("/tmp/debug.bits", (O_CREAT | O_APPEND), 0755);
 #endif
-        }
+}
 
-        // Insert bits into the queue.  Here is also where we repeat a single bit
-        // so that we're emitting d_symrate symbols per second.
-        inline void 
-        focc_impl::queuebit(bool bit) {
-            const unsigned int interp = d_symrate / 20000;
-            for(unsigned int i = 0; i < interp; i++) {
-                d_bitqueue.push(bit);
-            }
-        }
+// Insert bits into the queue.
+// Here is also where we repeat a single bit so that we're emitting d_symrate symbols per second.
+inline void focc_impl::queuebit(bool bit) {
+	const unsigned int interp = d_symrate / 20000;
 
-        focc_impl::~focc_impl()
-        {
-        }
+	for (unsigned int i = 0; i < interp; i++) {
+		d_bitqueue.push(bit);
+	}
+}
 
-        /*
-         * Convert a 28-bit vector (represented as one bit per char, values 
-         * being numeric 0 and 1) to a 40-bit bch-encoded word.
-         */
-        std::vector<char>
-        focc_impl::focc_bch(const std::vector<char> inbits) {
-            std::vector<char> outvec(40);
-            bvec zeroes("0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0");
-            bvec srcbvec(28);
-            charv_to_bvec(inbits, srcbvec);
-            bvec padded(concat(zeroes, srcbvec));
-            bvec encoded = bch.encode(padded);
-            bvec final = encoded(23, encoded.size()-1);
-            assert(final.size() == 40);
-            for(int i = 0; i < 40; i++) {
-                if(final[i] == 0) {
-                    outvec[i] = 0;
-                } else if(final[i] == 1) {
-                    outvec[i] = 1;
-                } else {
-                    assert(0);
-                }
-            }
-            return outvec;
-        }
+focc_impl::~focc_impl() {
+}
 
-        focc_frame *
-        focc_impl::make_frame(const std::vector<char> word_a, const std::vector<char> word_b, bool ephemeral, bool filler) {
-            // XXX: remove this
-            const unsigned int samples_per_sym = d_symrate / 20000;
-            std::vector<focc_segment *> segments;
-            std::vector<char> bch_a = focc_bch(word_a);
-            std::vector<char> bch_b = focc_bch(word_b);
-            segments.push_back(new focc_segment(FOCC_BI_BIT));
-            char dotting[] = { 1, 0, 1, 0, 1, 0, 1, 0, 1, 0 };
-            segments.push_back(new focc_segment(dotting, 10, samples_per_sym));
-            segments.push_back(new focc_segment(FOCC_BI_BIT));
-            char wordsync[] = { 1, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0 };
-            segments.push_back(new focc_segment(wordsync, 11, samples_per_sym));
-            segments.push_back(new focc_segment(FOCC_END));
+/*
+ * Convert a 28-bit vector (represented as one bit per char, values being numeric 0 and 1) to a 40-bit bch-encoded word.
+ */
+std::vector<char> focc_impl::focc_bch(const std::vector<char> inbits) {
+	std::vector<char> outvec(40);
+	bvec zeroes("0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0");
+	bvec srcbvec(28);
+	charv_to_bvec(inbits, srcbvec);
+	bvec padded(concat(zeroes, srcbvec));
+	bvec encoded = bch.encode(padded);
+	bvec final = encoded(23, encoded.size()-1);
 
-            for(int i = 0; i < 5; i++) {
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_a[0], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_a[10], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_END));
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_a[20], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_a[30], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_END));
+	assert(final.size() == 40);
 
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_b[0], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_b[10], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_END));
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_b[20], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_BI_BIT));
-                segments.push_back(new focc_segment(&bch_b[30], 10, samples_per_sym));
-                segments.push_back(new focc_segment(FOCC_END));
-            }
+	for (int i = 0; i < 40; i++) {
+		if (final[i] == 0) {
+			outvec[i] = 0;
+		} else if (final[i] == 1) {
+			outvec[i] = 1;
+		} else {
+			assert(0);
+		}
+	}
 
-            return new focc_frame(segments, ephemeral, filler);
-        }
+	return (outvec);
+}
+
+focc_frame *focc_impl::make_frame(const std::vector<char> word_a, const std::vector<char> word_b, bool ephemeral, bool filler) {
+	// XXX: remove this
+	const unsigned int samples_per_sym = d_symrate / 20000;
+	std::vector<focc_segment *> segments;
+	std::vector<char> bch_a = focc_bch(word_a);
+	std::vector<char> bch_b = focc_bch(word_b);
+	segments.push_back(new focc_segment(FOCC_BI_BIT));
+	char dotting[] = { 1, 0, 1, 0, 1, 0, 1, 0, 1, 0 };
+	segments.push_back(new focc_segment(dotting, 10, samples_per_sym));
+	segments.push_back(new focc_segment(FOCC_BI_BIT));
+	char wordsync[] = { 1, 1, 1, 0, 0, 0, 1, 0, 0, 1, 0 };
+	segments.push_back(new focc_segment(wordsync, 11, samples_per_sym));
+	segments.push_back(new focc_segment(FOCC_END));
+
+	for (int i = 0; i < 5; i++) {
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_a[0], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_a[10], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_END));
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_a[20], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_a[30], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_END));
+
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_b[0], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_b[10], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_END));
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_b[20], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_BI_BIT));
+		segments.push_back(new focc_segment(&bch_b[30], 10, samples_per_sym));
+		segments.push_back(new focc_segment(FOCC_END));
+	}
+
+	return new focc_frame(segments, ephemeral, filler);
+}
 
         void focc_impl::validate_superframe() {
             // XXX: remove this
@@ -299,7 +294,7 @@ namespace gr {
             word[1] = 1;
             word[2] = ((dcc & 0x2) == 0x2) ? 1 : 0;     // DCC
             word[3] = ((dcc & 0x1) == 0x1) ? 1 : 0;
-            
+
             word[4] = 1;                                // ACT = 1001
             word[5] = 0;
             word[6] = 0;
@@ -421,7 +416,7 @@ namespace gr {
         focc_impl::make_registration_superframe() {
             superframe_frames.push_back(make_frame(overhead_word_1(GLOBAL_DCC_SHORT, GLOBAL_SID, 1, 0, 0, 4), overhead_word_1(GLOBAL_DCC_SHORT, GLOBAL_SID, 1, 0, 0, 4)));
             superframe_frames.push_back(make_frame(
-                        overhead_word_2(GLOBAL_DCC_SHORT, 1, 1, 1, 1, 0, 23, 1, 1, 23, 0), 
+                        overhead_word_2(GLOBAL_DCC_SHORT, 1, 1, 1, 1, 0, 23, 1, 1, 23, 0),
                         overhead_word_2(GLOBAL_DCC_SHORT, 1, 1, 1, 1, 0, 23, 1, 1, 23, 0)
                         ));
             superframe_frames.push_back(make_frame(access_type_parameters_global_action(GLOBAL_DCC_SHORT, false), access_type_parameters_global_action(GLOBAL_DCC_SHORT, false)));
@@ -444,7 +439,7 @@ namespace gr {
 
             superframe_frames.push_back(make_frame(overhead_word_1(GLOBAL_DCC_SHORT, GLOBAL_SID, 1, 0, 0, 4), overhead_word_1(GLOBAL_DCC_SHORT, GLOBAL_SID, 1, 0, 0, 4)));
             superframe_frames.push_back(make_frame(
-                        overhead_word_2(GLOBAL_DCC_SHORT, 1, 1, 1, 1, 0, 23, 1, 1, 23, 0), 
+                        overhead_word_2(GLOBAL_DCC_SHORT, 1, 1, 1, 1, 0, 23, 1, 1, 23, 0),
                         overhead_word_2(GLOBAL_DCC_SHORT, 1, 1, 1, 1, 0, 23, 1, 1, 23, 0)
                         ));
             superframe_frames.push_back(make_frame(access_type_parameters_global_action(GLOBAL_DCC_SHORT, false), access_type_parameters_global_action(GLOBAL_DCC_SHORT, false)));
@@ -479,8 +474,8 @@ namespace gr {
             next_burst_state();
         }
 
-        /* This method has been called when all the samples in the current 
-         * burst segment have been sent.  It will update cur_burst_state, cur_off, and the 
+        /* This method has been called when all the samples in the current
+         * burst segment have been sent.  It will update cur_burst_state, cur_off, and the
          * relevant pointers within the current superframe.
          */
         void focc_impl::next_burst_state() {
@@ -518,7 +513,7 @@ namespace gr {
             cur_off = 0;
         }
 
-        void 
+        void
         focc_impl::focc_words_message(pmt::pmt_t msg) {
             assert(msg.is_tuple());
             size_t len = length(msg);
@@ -562,7 +557,7 @@ namespace gr {
             }
         }
 
-        void 
+        void
         focc_impl::push_frame_queue(focc_frame *frame) {
             boost::mutex::scoped_lock lock(frame_queue_mutex);
             frame_queue.push(frame);
@@ -600,7 +595,7 @@ namespace gr {
                 if(cur_burst_state == FOCC_BI_BIT) {
                     int samps_to_send = (samples_per_sym*2) - cur_off;
                     int toxfer = MIN(outleft, samps_to_send);
-                    //printf("XXX s_to_s %d toxfer %d\n", samps_to_send, toxfer); 
+                    //printf("XXX s_to_s %d toxfer %d\n", samps_to_send, toxfer);
                     assert(toxfer > 0);     // XXX: remove
                     assert(cur_off < (samples_per_sym*2));
                     if(busy_idle_bit == 0) {
@@ -647,16 +642,14 @@ namespace gr {
         }
 
 
-        // Move data from our internal queue (d_bitqueue) out to gnuradio.  Here 
-        // we also convert our data from bits (0 and 1) to symbols (1 and -1).  
-        //
-        // These symbols are then used by the FM block to generate signals that are
-        // +/- the max deviation.  (For POCSAG, that deviation is 4500 Hz.)  All of
-        // that is taken care of outside this block; we just emit -1 and 1.
+// Move data from our internal queue (d_bitqueue) out to gnuradio. Here, we also convert our data from bits (0 and 1) to
+// symbols (1 and -1).
+//
+// These symbols are then used by the FM block to generate signals that are +/- the max deviation.
+// (For POCSAG, that deviation is 4500 Hz.) All of that is taken care of outside this block; we just emit -1 and 1.
 
-        /*
-        int
-        focc_impl::oldwork(int noutput_items,
+#if 0
+int focc_impl::oldwork(int noutput_items,
                   gr_vector_const_void_star &input_items,
                   gr_vector_void_star &output_items) {
             const float *in = (const float *) input_items[0];
@@ -686,7 +679,9 @@ namespace gr {
             return toxfer;
 
         }
-        */
-    } /* namespace amps */
-} /* namespace gr */
+#endif
+
+
+}	/* namespace amps */
+}	/* namespace gr */
 
