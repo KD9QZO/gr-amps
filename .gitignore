@@ -1,2 +1,23 @@
+#
+# .gitignore
+#
+
+## BACKUP & TEMPORARY FILES ##
+
+*~
+*.bak
+*.tmp
+
+
+## BUILD ARTIFACTS ##
+
 build/
+build-*/
+/build/
+/build-*/
 .*.swp
+
+
+## IDE-SPECIFIC FILES ##
+
+CMakeLists.txt.user
